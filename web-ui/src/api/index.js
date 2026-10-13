@@ -8,14 +8,31 @@ const BASE = '/api'
  *   而不是我们约定的 JSON `{ error }`。这类 404 极容易被误当成功能 bug。
  *   这里统一识别并补一句人话提示，省得每个调用点各写一遍
  *   （已踩三次：日报删除 / 传媒批量操作 / 外观扩写）。
+ *
+ * ★ `timeoutMs` 是**按调用点可选**的（默认不设超时，与既有行为逐字一致）：
+ *   绝大多数接口都没有超时需求，唯一需要它的是「场景配图」这类含 LLM + ComfyUI 的长任务 ——
+ *   它慢是正常的，但也不能无限等下去。默认值留空才不会波及既有调用点。
  */
-async function request(path, { method = 'GET', body, headers, signal } = {}) {
-  const res = await fetch(`${BASE}${path}`, {
-    method,
-    headers: body !== undefined ? { 'Content-Type': 'application/json', ...headers } : headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    signal,
-  })
+async function request(path, { method = 'GET', body, headers, signal, timeoutMs } = {}) {
+  // 调用方自带 signal 时以它为准（并保留其语义）；否则仅在显式传了 timeoutMs 时才挂超时信号。
+  const effectiveSignal = signal || (timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined)
+  let res
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      method,
+      headers: body !== undefined ? { 'Content-Type': 'application/json', ...headers } : headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: effectiveSignal,
+    })
+  } catch (err) {
+    // 超时必须说清楚"是等超时了"：TimeoutError 只会来自上面的 AbortSignal.timeout，
+    // 而调用方自己的 signal 中止仍是 AbortError，语义不同，不能混着报（否则会把"用户取消"说成"超时"）
+    if (err?.name === 'TimeoutError') {
+      const secs = Math.round((timeoutMs || 0) / 1000)
+      throw new Error(`请求超时：${path} 等待超过 ${secs} 秒仍未返回。服务可能仍在生成，稍后刷新页面即可看到结果。`, { cause: err })
+    }
+    throw err
+  }
   const raw = await res.text()
   let result = {}
   try { result = raw ? JSON.parse(raw) : {} } catch { /* 非 JSON（多半是 Express 默认 HTML 错误页） */ }
@@ -2163,4 +2180,118 @@ export function regenerateMediaPostImages(ids) {
  */
 export function generateMediaSection(postId, sectionKey) {
   return request(`/media/posts/${postId}/sections/${encodeURIComponent(sectionKey)}`, { method: 'POST' })
+}
+
+// ── 地图页（世界地图骨架 = 叙事地理，非游戏网格图）──
+
+/** 层级标签与 POI 类型（口径在后端，前端不写死） */
+export function getWorldMapMeta() {
+  return request('/worldmap/meta')
+}
+
+export function listWorldMaps() {
+  return request('/worldmap/maps')
+}
+
+export function createWorldMap({ name, worldSettingId = null, note = '' } = {}) {
+  return request('/worldmap/maps', { method: 'POST', body: { name, worldSettingId, note } })
+}
+
+export function getWorldMap(mapId) {
+  return request(`/worldmap/maps/${mapId}`)
+}
+
+export function updateWorldMap(mapId, patch = {}) {
+  return request(`/worldmap/maps/${mapId}`, { method: 'PUT', body: patch })
+}
+
+export function deleteWorldMap(mapId) {
+  return request(`/worldmap/maps/${mapId}`, { method: 'DELETE' })
+}
+
+/** 复制一张地图（整棵子树）为新地图 —— 用作「新建时套模板」 */
+export function duplicateWorldMap(mapId, name = '') {
+  return request(`/worldmap/maps/${mapId}/duplicate`, { method: 'POST', body: { name } })
+}
+
+/** ① 生成骨架（L1 大地区 + L2 子地区，1 次短 LLM） */
+export function generateWorldMapSkeleton(mapId, { brief = '', regionCount, districtPerRegion } = {}) {
+  return request(`/worldmap/maps/${mapId}/generate`, {
+    method: 'POST', body: { brief, regionCount, districtPerRegion },
+  })
+}
+
+/** 导出 Markdown（贴回知识库用） */
+export function exportWorldMapMarkdown(mapId) {
+  return request(`/worldmap/maps/${mapId}/export`)
+}
+
+export function addWorldMapPlace(mapId, place) {
+  return request(`/worldmap/maps/${mapId}/places`, { method: 'POST', body: place })
+}
+
+export function updateWorldMapPlace(placeId, patch) {
+  return request(`/worldmap/places/${placeId}`, { method: 'PUT', body: patch })
+}
+
+export function deleteWorldMapPlace(placeId) {
+  return request(`/worldmap/places/${placeId}`, { method: 'DELETE' })
+}
+
+/** ② 逐区展开（L3 场景 + 每场景 POI；重复调用 = 换一批） */
+export function expandWorldMapPlace(placeId) {
+  return request(`/worldmap/places/${placeId}/expand`, { method: 'POST' })
+}
+
+/**
+ * 依据「名称 / 类型 / 一句话简介」让 AI 生成一条英文画面描述（scene_prompt）。
+ * **不落库** —— 只返回预览，用户可改可重掷，确认后随 updateWorldMapPlace 保存。
+ */
+export function generateWorldMapScenePrompt(input) {
+  return request('/worldmap/places/scene-prompt', { method: 'POST', body: input })
+}
+
+/**
+ * ★ AI **追加**生活地点（不落库）—— 给这个地点补几个店/设施，**不建新的一级**。
+ *
+ * 与 `expandWorldMapPlace` 的区别：那个会删掉该地点下全部子节点后整体替换，
+ * 这个只往当前节点的 POI 里追加，不碰任何子节点。
+ * 生成器出口已有两道闸门（与已有条目去重 / 全重复时抛错而非返回空），
+ * 所以这里**不需要**前端再去重。
+ *
+ * @param {object} p
+ * @param {number|string} p.placeId
+ * @param {number} [p.count] 想要几条（服务端夹 1~8）
+ * @param {string} [p.hint]  特别要求，如「多来点深夜路边摊」
+ * @param {string[]} [p.excludeNames] 当前表单里已有的 POI 名（**含未保存的手改条目**）——
+ *   只查库会漏掉用户刚打完还没保存的名字，去重会失败。
+ */
+export function expandWorldMapPois({ placeId, count, hint, excludeNames }) {
+  return request(`/worldmap/places/${placeId}/poi-draft`, {
+    method: 'POST',
+    body: { count, hint, excludeNames },
+  })
+}
+
+/**
+ * 修正地点（不落库）——照「角色 → 修正外观」的同一套契约做。
+ * `mode: 'image'` 传 `image`（dataURL）；`mode: 'text'` 传 `brief`（要点）。
+ * 产出 `{kind, summary, scenePrompt}` 草稿，由前端填进编辑表单，用户可再手改。
+ */
+export function refineWorldMapPlaceDraft({ placeId, mode = 'image', image = '', brief = '', hints = '' }) {
+  return request(`/worldmap/places/${placeId}/refine-draft`, {
+    method: 'POST',
+    body: { mode, image, brief, hints },
+  })
+}
+
+/**
+ * 给地点生成一张配图（场景页「✨ 生成配图」）—— **落盘 + 落库**，图自动进相册。
+ *
+ * ⚠ 超时给到 10 分钟：这一个请求里含「提示词准备（可能先补 scene_prompt）+ ComfyUI 出图」，
+ *   默认的 180s 在慢机或大图上会把已经跑了一半的出图掐断（用户看到的是"超时"，
+ *   而后端其实还在画）。服务端没有二次排队上限，等就够了。
+ */
+export function generateWorldMapPlaceImage(placeId) {
+  return request(`/worldmap/places/${placeId}/image`, { method: 'POST', timeoutMs: 600_000 })
 }

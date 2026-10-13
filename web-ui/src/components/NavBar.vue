@@ -34,6 +34,32 @@
         <span class="nav-label">奇遇</span>
       </div>
       
+      <!-- 地图：世界地图骨架（叙事地理）的规划工具。
+           与世界(内测)不同 —— 那边是可行走的游戏网格图，这边是从世界观落出地理结构。 -->
+      <router-link to="/worldmap" data-nav="worldmap" class="nav-item" :class="{ active: $route.path.startsWith('/worldmap') }" title="地图">
+        <div class="nav-icon-wrap">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2Z" />
+            <path d="M9 4v14M15 6v14" />
+          </svg>
+        </div>
+        <span class="nav-label">地图</span>
+      </router-link>
+
+      <!-- 场景：像角色立绘展示那样一处一处翻阅地图上的地点。
+           ★ 与「地图」分开 —— 那边是**看整张图和空间关系**（找路、编辑），
+             这边是**看单个地点本身**（名字、简介、在哪条链上）。 -->
+      <router-link to="/scenes" data-nav="scenes" class="nav-item" :class="{ active: $route.path.startsWith('/scenes') }" title="场景">
+        <div class="nav-icon-wrap">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="18" height="16" rx="2" />
+            <path d="M3 15l5-4 4 3 3-2 6 4" />
+            <circle cx="8.5" cy="8.5" r="1.4" />
+          </svg>
+        </div>
+        <span class="nav-label">场景</span>
+      </router-link>
+
       <router-link to="/media" data-nav="media" class="nav-item" :class="{ active: $route.path.startsWith('/media') }" title="媒体" @click="handleMediaClick">
         <div class="nav-icon-wrap">
           <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -170,6 +196,8 @@ const activeNavKey = computed(() => {
   if (p.startsWith('/chat') || p.startsWith('/group')) return 'chat'
   if (p.startsWith('/moments')) return 'moments'
   if (p.startsWith('/events')) return 'events'
+  if (p.startsWith('/worldmap')) return 'worldmap'
+  if (p.startsWith('/scenes')) return 'scenes'
   if (p.startsWith('/town')) return 'town'
   if (p.startsWith('/schedule')) return 'schedule'
   if (p.startsWith('/gallery')) return 'gallery'

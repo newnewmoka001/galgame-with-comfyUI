@@ -29,6 +29,7 @@ import MemorySettingsView from './views/MemorySettingsView.vue'
 import MaibotBridgeView from './views/MaibotBridgeView.vue'
 import GroupChatView from './views/GroupChatView.vue'
 import TownView from './views/TownView.vue'
+import WorldMapView from './views/WorldMapView.vue'
 
 const routes = [
   { path: '/standing-display', component: StandingDisplayView, meta: { standingDisplay: true } },
@@ -39,6 +40,12 @@ const routes = [
   { path: '/moments', component: MomentsView },
   { path: '/events', component: EventsView },
   { path: '/town', component: TownView, props: route => ({ initialPanel: route.query.panel === 'life' ? 'life' : '' }) },
+  { path: '/worldmap', component: WorldMapView },
+  // 「场景」：像角色立绘展示那样一次看一处地点（地点名、简介、所在路径），
+  //  供翻阅世界地图上已有的场景。⚠ 只读展示，不移动、不触发偶遇 ——
+  //  与「地图」分工不同：那边看整张图与空间关系（找路、编辑），这边看单个地点本身。
+  //   ⚠ 懒加载：该页只在用户显式点进「场景」时才下载。
+  { path: '/scenes', component: () => import('./views/SceneDisplayView.vue') },
   { path: '/schedule', component: ScheduleView },
   { path: '/gallery', component: GalleryView },
   { path: '/media', component: MediaView },

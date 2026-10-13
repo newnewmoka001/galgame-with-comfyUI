@@ -1175,6 +1175,9 @@ function initSchema(db) {
   // 迁移 + 种子: 媒体内容页（传媒 / 板块 / 帖子）
   migrateMediaSchema(db);
 
+  // 迁移: 世界地图骨架（叙事地理）+ 地点结构化属性 + 地点配图指针
+  migrateWorldMapSchema(db);
+
   // 种子: 奇遇事件类型库 + 朋友圈话题库（INSERT OR IGNORE，仅插入缺失的系统条目，不覆盖用户编辑）
   seedEventLibraries(db);
 
@@ -2530,6 +2533,118 @@ export {
 // 此处仅做兼容再导出，既有 import 路径不受影响。
 export { getSetting, setSetting, SETTING_TO_CONFIG } from './settings.js';
 
+
+/**
+ * 世界地图骨架（叙事地理）。
+ *
+ * ⚠ 与游戏小镇的 `town_maps` 是**两回事**，别混：
+ *   · `town_maps`  —— 可行走的**网格图**（tile 图层 + 寻路 + 资产），供「世界(内测)」用；
+ *   · `world_maps` —— 叙事**地理骨架**（大地区 → 子地区 → 场景 → POI），供「地图」页规划用。
+ * 两者将来可通过「导入小镇」打通，但数据模型刻意分开：
+ * 骨架是纯文本、秒级生成、不烧生图额度；网格图要资产生成与布局，重得多。
+ */
+function migrateWorldMapSchema(db) {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS world_maps (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        name             TEXT NOT NULL,
+        world_setting_id INTEGER,
+        note             TEXT NOT NULL DEFAULT '',
+        created_at       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE IF NOT EXISTS world_map_places (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        map_id     INTEGER NOT NULL REFERENCES world_maps(id) ON DELETE CASCADE,
+        parent_id  INTEGER REFERENCES world_map_places(id) ON DELETE CASCADE,
+        level      INTEGER NOT NULL,
+        key        TEXT NOT NULL,
+        name       TEXT NOT NULL,
+        name_en    TEXT,
+        kind       TEXT NOT NULL DEFAULT '',
+        summary    TEXT NOT NULL DEFAULT '',
+        pois_json  TEXT NOT NULL DEFAULT '[]',
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_wmp_map    ON world_map_places(map_id, level, sort_order);
+      CREATE INDEX IF NOT EXISTS idx_wmp_parent ON world_map_places(parent_id, sort_order);
+    `);
+  } catch (err) {
+    console.error('[db] migrateWorldMapSchema 失败:', err.message);
+  }
+  migrateWorldMapPlaceAttrs(db);
+  migrateWorldMapPlaceImage(db);
+}
+
+/**
+ * 迁移: 地图地点的**结构化属性**（准入 / 分区 / 场景提示词 / 功能分类）。
+ *
+ * ── 为什么需要（2026-10-05）──────────────────────────────
+ * 「谢绝外人」这类准入信息原先只写在提示词的散文常量里，在地图数据之外 ——
+ * 于是改地图不会改它，模型照样 ROLL 到不合适的地方；角色「在不在自己家」
+ * 也只能靠 LLM 推断，导致该穿居家服时穿外出服。
+ * 解法就是把这两件事变成**可查询的数据**，注入时由后端过滤/标注，不让模型猜。
+ *
+ * 加列一律 `ALTER TABLE ADD COLUMN` + PRAGMA 存在性检测（本表是 CREATE IF NOT EXISTS
+ * 建的，老库没有这几列）。**不给默认值以外的回填** —— 老数据 access 留空串表示
+ * 「未标注」，消费侧按「未标注 = 允许」处理（否则一次迁移会把所有地点关掉）。
+ */
+function migrateWorldMapPlaceAttrs(db) {
+  try {
+    const cols = new Set(db.prepare('PRAGMA table_info(world_map_places)').all().map(c => c.name));
+    const add = (name, ddl) => { if (!cols.has(name)) db.exec(`ALTER TABLE world_map_places ADD COLUMN ${ddl}`); };
+    // access: public | restricted | private | time_window（空串 = 未标注，按 public 处理）
+    add('access', `access TEXT NOT NULL DEFAULT ''`);
+    // zone: residence | activity | private_transit（空串 = 未标注）
+    add('zone', `zone TEXT NOT NULL DEFAULT ''`);
+    // category: 功能分类（商店街/商业设施/公园/文化/餐饮/居住/地标…），用于分组呈现
+    add('category', `category TEXT NOT NULL DEFAULT ''`);
+    // scene_prompt: 生图场景提示词（英文）—— 与 imagePromptTags 的检索面打通
+    add('scene_prompt', `scene_prompt TEXT NOT NULL DEFAULT ''`);
+    // open/close: 仅 access=time_window 有意义（'18:00' / '02:00'）
+    add('open_at', `open_at TEXT NOT NULL DEFAULT ''`);
+    add('close_at', `close_at TEXT NOT NULL DEFAULT ''`);
+    /**
+     * ★ pos_x / pos_y：**用户在点位图上手动摆过的坐标**（归一化 0~1，-1 = 未摆过）。
+     *
+     * 早先手动拖拽只写 localStorage，**浏览器本地**，后端与 LLM 都读不到 →
+     * 用户抱怨"被拖动过的点位不能保存"。现在落库，后端才能读到真实摆放。
+     *
+     * ⚠ 用 `-1` 表示"没摆过"（而不是 NULL 或 0）：0 是合法的左上角坐标，
+     *   用 0 当哨兵会让"摆在最左"和"没摆"混为一谈。
+     */
+    add('pos_x', `pos_x REAL NOT NULL DEFAULT -1`);
+    add('pos_y', `pos_y REAL NOT NULL DEFAULT -1`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_wmp_access ON world_map_places(map_id, access)`);
+  } catch (err) {
+    console.error('[db] migrateWorldMapPlaceAttrs 失败:', err.message);
+  }
+}
+
+/**
+ * 迁移: 地点配图（`world_map_places.image_url`）。
+ *
+ * 场景页要能「点一下生成一张配图」，但配图**默认不存在**：200 多个地点全量预生成
+ * 既慢又浪费（大部分地方用户根本不会看第二眼），所以初始为空、点选才生成。
+ *
+ * 图存哪：沿用 `imagePaths` 的图片分类目录（`place_scene`），库里只记**一个相对 URL**
+ * （`/images/place_scene/…`）—— 与 `media_posts.image` 同一口径：
+ * **磁盘是唯一真源，库只记指针**，相册靠扫目录自然收录，不需要额外的表。
+ *
+ * ⚠ 只加列、不回填：老库全部留空串 = 「还没生成过配图」，前端据此显示生成按钮。
+ */
+function migrateWorldMapPlaceImage(db) {
+  try {
+    const cols = new Set(db.prepare('PRAGMA table_info(world_map_places)').all().map(c => c.name));
+    if (!cols.has('image_url')) {
+      db.exec(`ALTER TABLE world_map_places ADD COLUMN image_url TEXT NOT NULL DEFAULT ''`);
+    }
+  } catch (err) {
+    console.error('[db] migrateWorldMapPlaceImage 失败:', err.message);
+  }
+}
 
 // 迁移: 世界生成配置改为 system_settings 存储；首次启动写入与前端一致的默认值。
 function migrateTownGenerationSettings(db) {

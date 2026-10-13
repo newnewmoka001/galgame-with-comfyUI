@@ -31,6 +31,10 @@ export const IMAGE_CATEGORIES = {
   // 建筑功能的写真/合影/纪念品（buildingFeatures/media.js 的 generatePortraitImage 落这里）。
   // 没登记就 getImageDir 直接抛 Unknown image category，三种生成型模板全部走不到结算。
   building_features: { dir: 'building_features', label: '建筑作品' },
+  // 场景页（/scenes）「一键生图」的地点配图 —— 初始一个地点都不带图，
+  // 用户点一次才落一张，所以这个目录绝大多数时候是空的/很小的。
+  // 相册是**扫目录**的（galleryCache），登记这一条就等于让它在相册里多出「场景」分类。
+  place_scene: { dir: 'place_scene', label: '场景' },
 };
 
 export const LEGACY_CATEGORY = 'history';

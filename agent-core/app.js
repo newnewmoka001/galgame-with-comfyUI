@@ -36,6 +36,7 @@ import newspaperRoutes from './src/routes/newspaper.js';
 import diaryRoutes from './src/routes/diary.js';
 import mediaRoutes from './src/routes/media.js';
 import townRoutes from './src/routes/town.js';
+import worldMapRoutes from './src/routes/worldMap.js';
 import characterReactionsRoutes from './src/routes/characterReactions.js';
 import maibotBridgeRoutes from './src/maibot-bridge/router.js';
 import { autoRestoreMissing } from './src/services/workflowTemplates.js';
@@ -142,6 +143,8 @@ app.use('/api/newspaper', wrapRouterAsync(newspaperRoutes));   // /api/newspaper
 app.use('/api/diaries', wrapRouterAsync(diaryRoutes));         // /api/diaries/:id 角色日记（后台生成 + SSE）
 app.use('/api/media', wrapRouterAsync(mediaRoutes));           // 媒体内容页（传媒/板块/帖子/刷新）
 app.use('/api/town', wrapRouterAsync(townRoutes));
+// 世界地图（叙事地理）：大地区 → 子地区 → 场景 → POI + 地点配图
+app.use('/api/worldmap', wrapRouterAsync(worldMapRoutes));
 // 角色操作反馈：/api/character-reactions/instant 低概率即时反应（额度 + 幂等在后端）
 app.use('/api/character-reactions', wrapRouterAsync(characterReactionsRoutes));
 
